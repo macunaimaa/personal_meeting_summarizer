@@ -12,6 +12,10 @@ import logging
 from datetime import datetime
 import dotenv
 import numpy as np
+try:
+    from .audio_utils import mix_audio_arrays
+except ImportError:  # pragma: no cover
+    from audio_utils import mix_audio_arrays
 
 # PyAudio for recording
 import pyaudio
@@ -105,6 +109,7 @@ class AudioRecorder:
         self.stream = None
         self.mic_stream = None
         self.system_stream = None
+        self.system_channels = 1
         self.recording_thread = None
 
         # Audio settings optimized for your system
@@ -380,6 +385,7 @@ class AudioRecorder:
                                 input_device_index=system_device,
                                 frames_per_buffer=self.chunk,
                             )
+                            self.system_channels = channels
                             logger.info(
                                 f"✅ Successfully opened system audio stream with {channels} channel(s)"
                             )
@@ -439,35 +445,28 @@ class AudioRecorder:
                                 self.chunk, exception_on_overflow=False
                             )
 
-                            # Convert to numpy arrays for mixing
                             mic_array = np.frombuffer(mic_data, dtype=np.int16)
                             system_array = np.frombuffer(system_data, dtype=np.int16)
 
-                            # Ensure arrays are same length for mixing
-                            min_length = min(len(mic_array), len(system_array))
-                            if min_length > 0:
-                                mic_array = mic_array[:min_length]
-                                system_array = system_array[:min_length]
-
-                                # Mix audio with optimized levels
-                                mixed = (mic_array * 0.8 + system_array * 0.6).astype(
-                                    np.int16
-                                )
+                            mixed = mix_audio_arrays(
+                                mic_array, system_array, self.system_channels
+                            )
+                            if mixed.size > 0:
                                 self.frames.append(mixed.tobytes())
-
-                                # Log audio levels periodically for debugging
-                                frame_count += 1
-                                if frame_count % 100 == 0:  # Every ~2 seconds
-                                    mic_level = np.abs(mic_array).mean()
-                                    system_level = np.abs(system_array).mean()
-                                    logger.debug(
-                                        f"Audio levels - Mic: {mic_level:.1f}, System: {system_level:.1f}"
-                                    )
                             else:
                                 logger.warning(
                                     "Empty audio arrays, using mic only for this chunk"
                                 )
                                 self.frames.append(mic_data)
+
+                            # Log audio levels periodically for debugging
+                            frame_count += 1
+                            if frame_count % 100 == 0:  # Every ~2 seconds
+                                mic_level = np.abs(mic_array).mean()
+                                system_level = np.abs(system_array).mean()
+                                logger.debug(
+                                    f"Audio levels - Mic: {mic_level:.1f}, System: {system_level:.1f}"
+                                )
 
                         except Exception as e:
                             # If system audio read fails, just use microphone
